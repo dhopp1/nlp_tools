@@ -83,6 +83,7 @@ def download_document(metadata, data_path, text_id, web_filepath):
         return None
     else:
         web_filepath = web_filepath.split(",")[0] # may have multiple URLs stored in field, take only first (english)
+        web_filepath = web_filepath.splitlines()[0] #may have multiple URLS stored on separate lines, take only first
         
         # first check if this file already downloaded
         if not(os.path.isfile(f"{data_path}raw_files/{text_id}.txt")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.csv")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.doc")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.docx")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.html")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.pdf")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.txt")):
@@ -271,25 +272,34 @@ def convert_to_text(metadata, data_path, text_id, windows_tesseract_path = None,
                     eng_words = [x for x in alphas if x in english_dict]
                     
                     try:
-                        eng_dict = len(eng_words) / len(alphas)
+                        if len(alphas) == 0:
+                            eng_dict = 0 # if eng_dict == 0, then ocr will be forced
+                        else:
+                            eng_dict = len(eng_words) / len(alphas)
                     except:
                         eng_dict = 1.0
                 else:
                     eng_dict = 1.0
                 
                 try:
-                    if (
-                        (len(set(return_text.split("[newpage] "))) == 1) | # if only empties, scan, needs to be OCR converted.
-                        ((return_text.lower().count("/g") / len(return_text)) > 0.01) | # If bunch of "/G"s, greater than 1% of all the characters, encoding error, like review of maritime transport 2006
-                        (return_text.lower().count("_") / len(return_text) > 0.05) | 
-                        (return_text.lower().count("sqj") > 10) | # if poorly digitized and a lot of 'sqj's
-                        (return_text.lower().count("\x03") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x03's
-                        (return_text.lower().count("\x01") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x01's
-                        (return_text.lower().count("^") / len(return_text) > 0.0001) | 
-                        (sum([1 if return_text[i] == return_text[i-1] == return_text[i-2] and return_text[i].isalpha() else 0 for i in range(2, len(return_text))]) / len(return_text) > 0.0009) | # many repeated letters is an error
-                        (eng_dict < 0.8) | # high proportion of out of vocabulary words
-                        (force_ocr) # manually force OCR
-                    ): # force OCR
+                    #check to see if ocr should be used
+                    if len(return_text) == 0: #this stops below condition throwing an error
+                        use_ocr = True
+                    else:
+                        use_ocr = (
+                            (len(set(return_text.split("[newpage] "))) == 1) | # if only empties, scan, needs to be OCR converted.
+                            ((return_text.lower().count("/g") / len(return_text)) > 0.01) | # If bunch of "/G"s, greater than 1% of all the characters, encoding error, like review of maritime transport 2006
+                            (return_text.lower().count("_") / len(return_text) > 0.05) | 
+                            (return_text.lower().count("sqj") > 10) | # if poorly digitized and a lot of 'sqj's
+                            (return_text.lower().count("\x03") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x03's
+                            (return_text.lower().count("\x01") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x01's
+                            (return_text.lower().count("^") / len(return_text) > 0.0001) | 
+                            (sum([1 if return_text[i] == return_text[i-1] == return_text[i-2] and return_text[i].isalpha() else 0 for i in range(2, len(return_text))]) / len(return_text) > 0.0009) | # many repeated letters is an error
+                            (eng_dict < 0.8) | # high proportion of out of vocabulary words
+                            (force_ocr) # manually force OCR
+                        )
+                        
+                    if use_ocr: # force OCR
                         return_text = parse_ocr_pdf(data_path, raw_path, windows_tesseract_path, windows_poppler_path)
                         # remove temporary image files from OCR
                         for f in glob.glob(f"{data_path}*.jpg"):
@@ -298,7 +308,7 @@ def convert_to_text(metadata, data_path, text_id, windows_tesseract_path = None,
                     return_text = ""
             elif ".html" in raw_path:
                 return_text = parse_html(raw_path)
-            elif ".docx" or ".doc" in raw_path:
+            elif ".docx" in raw_path or ".doc" in raw_path:
                 return_text = parse_word(raw_path)
             elif ".csv" in raw_path:
                 return_text = parse_csv(raw_path)
