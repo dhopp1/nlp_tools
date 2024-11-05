@@ -15,6 +15,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import re
 from PyPDF2 import PdfReader, PdfWriter
+from unidecode import unidecode
 
 # key between langdetect language ISO code and NLTK's names for snowball, stopwords, and entity detection
 nltk_langdetect_dict = {
@@ -105,9 +106,99 @@ def gen_spacy_entity_lang_dict(dictionary, lang):
 def lower(stringx):
     "lower case the text"
     return stringx.lower()
+
+def replace_accents(stringr):
+    "remove unusual characters, currency symbols, and replace accented characters"
+    return unidecode(stringr)
+
+def remove_headers_and_footers(stringx):
+    "removes headers and footers, that is, repeated text at the bottom or top of all pages. Keeps first header and last footer"
+    # Split the content by [newpage]
+    sections = stringx.split('[newpage]')
+    
+    # Check if there are enough sections, (first section always empty)
+    if len(sections) < 3:
+        return stringx  # No headers/footers to remove if there's less than 2 sections
+
+    # Identify header (first line of the first section) and footer (last line of the last section)
+    header = None
+    for section in sections[1:]:
+        if section.strip():
+            header = re.sub(r'\d+', '', section.strip().split('\n')[0])
+            break
+        
+    # Identify footer (last line of the last section if not empty)
+    footer = re.sub(r'\d+', '', sections[-1].strip().split('\n')[-1]) if sections[-1].strip() else None
+
+    # Process each section
+    cleaned_sections = []
+    for index, section in enumerate(sections):
+        lines = section.strip().split('\n')  # Split section into lines
+        
+        if index == 0:
+            continue
+        # Keep the first header (in the first section)
+        elif index == 1 and lines and re.sub(r'\d+', '', lines[0]) == header:
+            # remove footer
+            if lines and re.sub(r'\d+', '', lines[-1]) == footer:
+                lines.pop() #removes last element
+        
+        # in middle sections remove all 
+        elif index < len(sections) - 1:
+            # For other sections, remove the header if it matches
+            if lines and re.sub(r'\d+', '', lines[0]) == header:
+                lines.pop(0)  # Remove the header
+            # remove footer
+            if lines and re.sub(r'\d+', '', lines[-1]) == footer:
+                lines.pop() #removes last element
+        
+        #if final section, then do not remove the footer
+        else:
+            # For other sections, remove the header if it matches
+            if lines and re.sub(r'\d+', '', lines[0]) == header:
+                lines.pop(0)  # Remove the header
+        
+        
+        # Join the cleaned lines back together, preserving line breaks
+        cleaned_sections.append('\n'.join(lines))
+
+    stringx = '[newpage]' + '\n[newpage]'.join(cleaned_sections).strip()
+    # Join cleaned sections back together with '[newpage]'
+    return stringx
+
+
+def remove_urls(stringx):
+    "removes urls based on elements that either start with http or www. "
+    url_pattern = r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+|www\.[a-zA-Z0-9./]+"
+    stringx = re.sub(url_pattern, "", stringx)
+    return stringx
+
+
+ligature_map = {
+    'ﬁ': 'fi',
+    'ﬂ': 'fl',
+    'ﬃ': 'ffi',
+    'ﬄ': 'ffl',
+    'ﬀ': 'ff',
+    'ﬆ': 'st'
+}
+
+def replace_ligatures(stringx):
+    "Function to replace ligatures"
+    for ligature, replacement in ligature_map.items():
+        stringx = stringx.replace(ligature, replacement)
+    return stringx
+
+
+# this is a list of periods/dots that we do not want to replace with | because they are not sentences
+abbreviations = ['h.e.', 'h. e.', 'e.g.', 'i.e.', 'etc.', 'vs.', 'p.m.', 'a.m.', 'dr.', 'mr.', 'mrs.', 'ms.', 
+                'jr.', 'sr.', ' st.', ' no.', 'co.', 'ltd.', 'inc.', 'prof.', 'gen.', 'col.', 'lt.', 'capt.', 
+                'maj.', 'rev.', 'u.s.', 'cf.', 'et al.', 'ibid.', 'op.', 'cit.', 'vol.', 'fig.', 'ch.', 'ed.', 
+                'esq.', 'sec.']
     
 def replace_newline_period(stringx):
     "replace new line characters, new page characters, and periods with |. Also remove multiple white spaces"
+    
     # replace newlines with |s
     stringx = stringx.replace("\n", " | ")
     
@@ -117,19 +208,80 @@ def replace_newline_period(stringx):
     # remove multiple whitespace
     stringx = " ".join(stringx.split())
 
+    for abbr in abbreviations:
+        # replace abbreviations with empty string
+        replacement = abbr.replace(".", "")
+        stringx = re.sub(re.escape(abbr), replacement, stringx)
+
     # replace all periods with |, including a space so the words can be found independently of the period
     stringx = stringx.replace(".", " | ")
+    stringx = stringx.replace("?", " | ")
+    stringx = stringx.replace("!", " | ")
+
+    # append a vertical line to beginning and end so all sentences are enclosed by two |s
+    stringx = "| " + stringx + " |"
+    
+    return stringx
+
+def replace_period(stringx):
+    "replace new line characters, new page characters with space ' ', and periods with |. Also remove multiple white spaces"
+    # replace newlines with |s
+    stringx = stringx.replace("\n", " ")
+    # replace [newpage]
+    stringx = stringx.replace("[newpage]", "")
+    # remove multiple whitespace
+    stringx = " ".join(stringx.split())
+    
+    for abbr in abbreviations:
+        # Escape periods for regex, and replace with a placeholder
+        replacement = abbr.replace(".", "")
+        stringx = re.sub(re.escape(abbr), replacement, stringx)
+
+    # replace all periods with |, including a space so the words can be found independently of the period
+    stringx = stringx.replace(".", " | ")
+    stringx = stringx.replace("?", " | ")
+    stringx = stringx.replace("!", " | ")
     
     # append a vertical line to beginning and end so all sentences are enclosed by two |s
     stringx = "| " + stringx + " |"
     
     return stringx
+
+def replace_with_dict(stringx, replace_map):
+    "replace dict names with dict values in stringx"
+    for find, replace in replace_map.items():
+        stringx = stringx.replace(find, replace)
+    return stringx
     
 def remove_punctuation(stringx):
-    "remove punctuation, except |s"
-    stringx = stringx.translate(
-        str.maketrans(string.punctuation.replace("|", "") + "”“’;•", ' '*len(string.punctuation.replace("|", "") + "”“’;•"))
-    )
+    "remove punctuation, except |s, replace quotation marks apostophes brackets, commas, colons, and semicolons with nothing. dashes and slashes with spaces"
+    stringx = stringx.replace(" & ", " and ").replace("&", " and")
+    #delete these punctuation
+    stringx = stringx.translate(str.maketrans('', '', '"#\'(),/:;?@[]^`{}~”“’;•'))
+    replace_with_space = '!.?$%*+-<=>\\_~'
+    stringx = stringx.translate(str.maketrans(replace_with_space, ' '*len(replace_with_space)))
+    return stringx
+
+def drop_numbers(stringx):
+    "Remove all numbers"
+    stringx = re.sub(r'\d+', '', stringx)
+    return stringx
+
+def exclude_words(stringx, exclude_words_df):
+    "excludes words or phrases using a pandas dataframe with the first column being a list of words to exclude and replace with empty '' "
+    exclude_words_df.rename(columns={exclude_words_df.columns[0]: 'word to exclude'}, inplace=True)
+    exclude_words = set(exclude_words_df['word to exclude'].dropna().str.lower())  # drop NaN values and convert to a set for faster lookups
+    for word in exclude_words:
+        stringx = re.sub(rf'(\s){word.lower()}(\s)', r'\1\2', stringx)  # Match the word with spaces before and after
+    return stringx
+        
+
+def replace_words_text_transform(stringx, replace_words_df):
+    "replaces words or phrases using a pandas dataframe with the first column being a list of words to replace and the second column being a list of words to replace with."
+    replace_words_df.rename(columns={replace_words_df.columns[0]: 'term', replace_words_df.columns[1]: 'replacement'}, inplace=True)
+    replace_dict = dict(zip(replace_words_df['term'].dropna().str.lower(), replace_words_df['replacement'].dropna().str.lower()))
+    for term, replacement in replace_dict.items():
+        stringx = re.sub(rf'(\s){term.lower()}(\s)', r'\1' + replacement.lower() + r'\2', stringx)  # Match and replace whole words with spaces
     return stringx
 
 def remove_stopwords(stringx, language):
@@ -195,7 +347,8 @@ def gen_sentiment_report(stringx, sentiment_analyzer = SentimentIntensityAnalyze
     stringx = remove_punctuation(stringx)
     
     string_list = stringx.split("|")
-    string_list = [x for x in string_list if len(set(x)) > 1]
+    # keep only strings which are more than 3 chracters, more than two words, and is not numeric
+    string_list = [x for x in string_list if (len(x) > 3) & (len(x.split(" ")) > 2) & (not(x.isnumeric()))]
     sentiment_list = [get_single_sentiment(x, sentiment_analyzer)["compound"] for x in string_list]
     
     sentiment_report = pd.DataFrame({

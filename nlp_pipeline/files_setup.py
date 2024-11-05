@@ -1,6 +1,6 @@
 import pandas as pd
 import requests
-from PyPDF2 import PdfReader
+import fitz  # PyMuPDF
 from bs4 import BeautifulSoup
 import pytesseract
 import platform
@@ -11,6 +11,9 @@ import textract
 from langdetect import detect
 import os, glob, shutil
 import platform
+from transformers import pipeline, AutoModelForCTC, AutoTokenizer
+from pydub import AudioSegment
+import tempfile
 
 # English vocabulary for detecting poorly encoded PDFs
 english_dict = pd.read_csv("https://github.com/dwyl/english-words/raw/master/words_alpha.txt", header = None)
@@ -78,16 +81,42 @@ def generate_metadata_file(data_path, metadata_addt_column_names):
 
 def download_document(metadata, data_path, text_id, web_filepath):
     "download a file from a URL and update the metadata file"
-    
+	
     if str(web_filepath) == "" or str(web_filepath) == "nan":
         return None
     else:
         web_filepath = web_filepath.split(",")[0] # may have multiple URLs stored in field, take only first (english)
+        web_filepath = web_filepath.splitlines()[0] #may have multiple URLS stored on separate lines, take only first
         
         # first check if this file already downloaded
-        if not(os.path.isfile(f"{data_path}raw_files/{text_id}.txt")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.csv")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.doc")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.docx")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.html")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.pdf")) and not(os.path.isfile(f"{data_path}raw_files/{text_id}.txt")):
+        if (
+                not(os.path.isfile(f"{data_path}raw_files/{text_id}.txt"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.csv"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.doc"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.docx"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.html"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.pdf"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.txt"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.jpg"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.mp3"))
+                and not(os.path.isfile(f"{data_path}raw_files/{text_id}.wav"))
+                ):
+            print(f"{data_path}raw_files/{text_id}")
             try: # try downloading the file first
                 response = requests.get(web_filepath)
+                # if forbidden, try again with a different header
+                if response.status_code == 403:
+                    print("Failed to access URL: 403 Forbidden, retrying")
+                    headers = {
+                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
+                                }
+                    response = requests.get(web_filepath, headers=headers)
+                    if response.status_code == 200:
+                        print("Success")
+                    else:
+                        print(f"Failed to access URL. Status code: {response.status_code}")
+                    
+                
                 content_type = response.headers.get('content-type')
                 
                 if "application/pdf" in content_type:
@@ -102,6 +131,14 @@ def download_document(metadata, data_path, text_id, web_filepath):
                     ext = ".csv"
                 elif "text/plain" in content_type:
                     ext = ".txt"
+                elif "image/jpeg" in content_type:
+                    ext = ".jpg"
+                elif web_filepath[-3:] == "mp3": # the mp3 content_type returns 'application/octet-stream'
+                    ext = ".mp3"
+                elif web_filepath[-3:] == "mp4":
+                    ext = ".mp4"
+                elif web_filepath[-3:] == "wav": 
+                    ext = ".wav"
                 else:
                     ext = ""
                 
@@ -123,18 +160,18 @@ def download_document(metadata, data_path, text_id, web_filepath):
                         return None
                 except:
                     return None
-            
-        
+
 def parse_pdf(pdf_path):
     "parse a pdf and return text string"
-    reader = PdfReader(pdf_path)
+    # Open the PDF file
+    doc = fitz.open(pdf_path)
     return_text = ""
-    if any(["OceScanCompression" in key for key in reader.metadata.keys()]):
-        return_text = "[newpage] "
-    else:
-        for i in range(len(reader.pages)):
-            return_text += "[newpage] " + reader.pages[i].extract_text()
-        
+    
+    # Iterate over each page in the PDF
+    for page_num in range(doc.page_count):
+        page = doc.load_page(page_num)  # Load each page
+        return_text += "[newpage] " + page.get_text("text")  # Extract the text content of the page
+
     return return_text
 
 def parse_ocr_pdf(data_path, pdf_path, windows_tesseract_path = None, windows_poppler_path = None):
@@ -235,6 +272,85 @@ def parse_csv(doc_path):
     
     return return_text
 
+def parse_jpg(jpg_path):
+	print("OCR conversion jpg") 
+	text = str(((pytesseract.image_to_string(Image.open(jpg_path)))))
+	return_text = text.replace("-\n", "")
+	return return_text
+
+def load_asr(model_name):
+    "load an automatic speech recognition model from huggingface"
+    # Define the directory where the model will be saved
+    save_directory = "./automatic-speech-recognition-models/"+model_name
+
+    # Create the directory if it doesn't exist
+    if not os.path.exists(save_directory):
+        os.makedirs(save_directory)
+  
+    # Check if the model exists in the specified directory
+    if os.listdir(save_directory):
+        print(f"Loading model from {save_directory}")
+        asr = pipeline("automatic-speech-recognition", model=save_directory)
+    else:
+        print(f"Model not found in {save_directory}, downloading and saving it.")
+        asr = pipeline("automatic-speech-recognition", model=model_name)
+        # and save it for future use
+        asr.save_pretrained(save_directory)
+
+    return(asr)
+
+def parse_wav(wav_path, model_name="openai/whisper-base"):
+    """
+    Transcribes an .wav file into text using a specified model from Hugging Face and returns text.
+
+    Parameters:
+    - wav_path (str): Path to the .wav file to be transcribed.
+    - model_name (str): Hugging Face model name for the STT task. Default is "openai/whisper-base".
+
+    Returns:
+    - Transcripted text from the wav
+    """
+    
+    # if asr nor loaded then load it
+    if 'asr' not in globals():
+        asr = load_asr(model_name=model_name)
+
+    # Transcribe the WAV audio file directly
+    return_text = asr(wav_path, compression_ratio_threshold=1.35)["text"]
+
+    return(return_text)
+
+def parse_mp3(raw_path, model_name="openai/whisper-base"):
+    """
+    Transcribes an .mp3 file into text using a specified model from Hugging Face and returns text.
+
+    Parameters:
+    - mp3_path (str): Path to the .mp3 file to be transcribed.
+    - model_name (str): Hugging Face model name for the STT task. Default is "openai/whisper-base".
+
+    Returns:
+    - Transcripted text from the mp3
+    """
+    # Convert MP3 to WAV format using pydub
+    if ".mp3" in raw_path:
+        audio = AudioSegment.from_mp3(raw_path)
+    elif ".mp4" in raw_path:
+        audio = AudioSegment.from_file(raw_path, format="mp4")
+    
+    # if asr nor loaded then load it
+    if 'asr' not in globals():
+        asr = load_asr(model_name=model_name)
+
+    # Use a temporary file to save the converted audio as WAV
+    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp_wav_file:
+        audio.export(tmp_wav_file.name, format="wav")
+        
+        # Transcribe the WAV audio file directly
+        return_text = asr(tmp_wav_file.name)["text"]
+
+    return(return_text)
+
+
 
 def detect_language(stringx):
     "determine the language of a string"
@@ -249,10 +365,11 @@ def convert_to_text(metadata, data_path, text_id, windows_tesseract_path = None,
     raw_exists = type(raw_path) == str
     if raw_exists:
          raw_exists = raw_exists & (len(raw_path) > 0)
-    
+		
     if raw_exists:
         # first check if this file already converted
         if not(os.path.isfile(f"{data_path}txt_files/{text_id}.txt")):
+            print(f"{data_path}txt_files/{text_id}.txt")
             # pdf file
             if ".pdf" in raw_path:
                 try:
@@ -271,25 +388,33 @@ def convert_to_text(metadata, data_path, text_id, windows_tesseract_path = None,
                     eng_words = [x for x in alphas if x in english_dict]
                     
                     try:
-                        eng_dict = len(eng_words) / len(alphas)
+                        if len(alphas) == 0:
+                            eng_dict = 0 # if eng_dict == 0, then ocr will be forced
+                        else:
+                            eng_dict = len(eng_words) / len(alphas)
                     except:
                         eng_dict = 1.0
                 else:
                     eng_dict = 1.0
                 
                 try:
-                    if (
-                        (len(set(return_text.split("[newpage] "))) == 1) | # if only empties, scan, needs to be OCR converted.
-                        ((return_text.lower().count("/g") / len(return_text)) > 0.01) | # If bunch of "/G"s, greater than 1% of all the characters, encoding error, like review of maritime transport 2006
-                        (return_text.lower().count("_") / len(return_text) > 0.05) | 
-                        (return_text.lower().count("sqj") > 10) | # if poorly digitized and a lot of 'sqj's
-                        (return_text.lower().count("\x03") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x03's
-                        (return_text.lower().count("\x01") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x01's
-                        (return_text.lower().count("^") / len(return_text) > 0.0001) | 
-                        (sum([1 if return_text[i] == return_text[i-1] == return_text[i-2] and return_text[i].isalpha() else 0 for i in range(2, len(return_text))]) / len(return_text) > 0.0009) | # many repeated letters is an error
-                        (eng_dict < 0.8) | # high proportion of out of vocabulary words
-                        (force_ocr) # manually force OCR
-                    ): # force OCR
+                    #check to see if ocr should be used
+                    if len(return_text) == 0: #this stops below condition throwing an error
+                        use_ocr = True
+                    else:
+                        use_ocr = (
+                            (len(set(return_text.split("[newpage] "))) == 1) | # if only empties, scan, needs to be OCR converted.
+                            ((return_text.lower().count("/g") / len(return_text)) > 0.01) | # If bunch of "/G"s, greater than 1% of all the characters, encoding error, like review of maritime transport 2006
+                            (return_text.lower().count("_") / len(return_text) > 0.05) | 
+                            (return_text.lower().count("sqj") > 10) | # if poorly digitized and a lot of 'sqj's
+                            (return_text.lower().count("\x03") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x03's
+                            (return_text.lower().count("\x01") / len(return_text) > 0.01) | # if poorly digitized and a lot of '\x01's
+                            (return_text.lower().count("^") / len(return_text) > 0.0001) | 
+                            (sum([1 if return_text[i] == return_text[i-1] == return_text[i-2] and return_text[i].isalpha() else 0 for i in range(2, len(return_text))]) / len(return_text) > 0.0009) | # many repeated letters is an error
+                            (eng_dict < 0.8) | # high proportion of out of vocabulary words
+                            (force_ocr) # manually force OCR
+                        )
+                    if use_ocr: # force OCR
                         return_text = parse_ocr_pdf(data_path, raw_path, windows_tesseract_path, windows_poppler_path)
                         # remove temporary image files from OCR
                         for f in glob.glob(f"{data_path}*.jpg"):
@@ -298,7 +423,7 @@ def convert_to_text(metadata, data_path, text_id, windows_tesseract_path = None,
                     return_text = ""
             elif ".html" in raw_path:
                 return_text = parse_html(raw_path)
-            elif ".docx" or ".doc" in raw_path:
+            elif ".docx" in raw_path or ".doc" in raw_path:
                 return_text = parse_word(raw_path)
             elif ".csv" in raw_path:
                 return_text = parse_csv(raw_path)
@@ -306,6 +431,19 @@ def convert_to_text(metadata, data_path, text_id, windows_tesseract_path = None,
                 file = open(f"{raw_path}", "r", encoding = "UTF-8") 
                 return_text = file.read()
                 file.close()
+            elif ".jpg" in raw_path:
+                return_text = parse_jpg(raw_path)
+            elif ".mp3" in raw_path or ".mp4" in raw_path:
+                try:
+                    return_text = parse_mp3(raw_path=raw_path)
+                except:
+                    return_text = ""
+            elif ".wav" in raw_path:
+                try:
+                    return_text = parse_wav(wav_path=raw_path)
+                except:
+                    return_text = ""
+
             
             # write text file
             file = open(f"{data_path}txt_files/{text_id}.txt", "wb+")
