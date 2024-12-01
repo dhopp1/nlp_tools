@@ -104,8 +104,16 @@ class nlp_processor:
             text_ids, 
             path_prefix,
             perform_lower = False,
+            replace_accented_and_unusual_characters = False,
+            perform_remove_multiple_header_and_footers = False,
+            perform_remove_urls = False,
+            perform_replace_period=False,
             perform_replace_newline_period = False,
+            replace_words_with_punctuation_df = None,
             perform_remove_punctuation = False,
+            drop_numbers = False,
+            replace_words_df = None,
+            exclude_words_df = None,
             perform_remove_stopwords = False,
             perform_stemming = False,
             stemmer = "snowball"
@@ -115,23 +123,39 @@ class nlp_processor:
             :text_ids: list[float]: single text_id or list of them to perform the transformation(s) on
             :path_prefix: str: what to prefix the resulting .txt files with to label which transformations have been done. A "_" will be appended to the end of it.
             :perform_lower: boolean: whether or not to lower case the text
+            :replace_accented_and_unusual_characters: boolean: whether to remove accented characters, currency symbols, and unusual characters. 
+            :perform_remove_multiple_header_and_footers: boolean: whether to remove all headers after the first one, and same for footers. First header and first footer will be kept. 
+            :perfrom_remove_urls: boolean: whether to remove urls and replace with nothing
+            :perform_replace_period: boolean: whether or not to replace periods with | so words and sentences can be identified in isolation            
             :perform_replace_newline_period: boolean: whether or not to replace new lines and periods with | so words and sentences can be identified in isolation
-            :perform_remove_punctuation: boolean: whether or not to remove punctuation, except for |'s
+            :replace_words_with_punctuation_df: boolean: the same as replace_words_df but it is run before punctuation is removed in the case that punctuation is removed 
+            :perform_remove_punctuation: boolean: whether or not to remove punctuation, except for |'s    "remove punctuation, except |s, replace quotation marks apostophes brackets, commas, colons, and semicolons with nothing. dashes and slashes with spaces"
+            :exclude_words_df: pandas dataframe with the first column being a list of words to exclude and replace with ""
+            :replace_words_df: pandas dataframe with the first column being a list of words to replace and the second column being a list of words to replace with.
             :perform_remove_stopwords: boolean: whether or not to remove stopwords
             :perform_stemming: boolean: whether or not to perform stemming
             :stemmer: if choosing to stem, nltk stemmer. E.g., nltk.stem.snowball.SnowballStemmer("english"), or string of "snowball" or "lancaster" for one of these. Lancaster only works in english
         """
         path_prefix += "_"
         
+        print(len(text_ids))
+        
         if type(text_ids) != list:
             text_ids = [text_ids]
+            
+        print(len(text_ids))
+            
         counter = 1
         for text_id in text_ids:
-            print(f"transforming text: {counter}/{len(text_ids)}")
-            counter += 1
+            
             
             text_path = self.metadata.loc[lambda x: x.text_id == text_id, "local_txt_filepath"].values[0]
             language = self.metadata.loc[lambda x: x.text_id == text_id, "detected_language"].values[0]
+            
+            print("transforming " + str(text_path) + f" {counter}/{len(text_ids)}")
+            counter += 1
+            
+            
             if (str(language) == "") | (str(language) == "nan"): # if no language, default to english
                 language = "en"
             
@@ -142,12 +166,30 @@ class nlp_processor:
                 stringx = file.read()
                 file.close()
                 
+                
                 if perform_lower:
                     stringx = self.text_transformation.lower(stringx)
+                stringx = self.text_transformation.replace_ligatures(stringx)
+                if replace_accented_and_unusual_characters:
+                    stringx = self.text_transformation.replace_accents(stringx)
+                if perform_remove_urls:
+                    stringx = self.text_transformation.remove_urls(stringx)
+                if perform_remove_multiple_header_and_footers:
+                    stringx = self.text_transformation.remove_headers_and_footers(stringx)
+                if perform_replace_period:
+                    stringx = self.text_transformation.replace_period(stringx)
                 if perform_replace_newline_period:
                     stringx = self.text_transformation.replace_newline_period(stringx)
+                if replace_words_with_punctuation_df is not None:
+                    stringx = self.text_transformation.replace_words_text_transform(stringx, replace_words_with_punctuation_df)
                 if perform_remove_punctuation:
                     stringx = self.text_transformation.remove_punctuation(stringx)
+                if drop_numbers:
+                    stringx = self.text_transformation.drop_numbers(stringx)
+                if replace_words_df is not None:
+                    stringx = self.text_transformation.replace_words_text_transform(stringx, replace_words_df)
+                if exclude_words_df is not None:
+                    stringx = self.text_transformation.exclude_words(stringx, exclude_words_df)
                 if perform_remove_stopwords:
                     stringx = self.text_transformation.remove_stopwords(stringx, language)
                 if perform_stemming:
@@ -443,7 +485,9 @@ class nlp_processor:
             counter += 1
             
             txt_path = f"{self.data_path}transformed_txt_files/{path_prefix}{text_id}.txt"
-            orig_txt_path = f"{self.data_path}txt_files/{text_id}.txt" # for n_pages
+            #orig_txt_path = f"{self.data_path}txt_files/{text_id}.txt" # for n_pages
+            orig_txt_path = self.metadata.loc[lambda x: x.text_id == text_id, "local_txt_filepath"].values[0]
+
             language = self.metadata.loc[lambda x: x.text_id == text_id, "detected_language"].values[0]
             
             # only do if txt path exists and hasn't already been run
